@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VR Mall - Interactive Roadmap</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Firebase v11+ SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, inMemoryPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Firebase Config (Uses variables provided by the environment) ---
+        let db, auth, userId, app, docRef;
+        let appState = {}; // Local cache of app state
+        let isSaving = false; // Simple debounce/lock
+        let saveTimeout;
+
+        // Use __app_id and __firebase_config if available, otherwise use defaults
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'vr-mall-roadmap';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            // Provide fallback config for local testing if needed, though it won't persist
+            apiKey: "YOUR_FALLBACK_API_KEY",
+            authDomain: "YOUR_FALLBACK_AUTH_DOMAIN",
+            projectId: "YOUR_FALLBACK_PROJECT_ID",
+            storageBucket: "YOUR_FALLBACK_STORAGE_BUCKET",
+            messagingSenderId: "YOUR_FALLBACK_MESSAGING_SENDER_ID",
+            appId: "YOUR_FALLBACK_APP_ID"
+        };
+        const mainDocPath = `artifacts/${appId}/public/data/vrMallRoadmap/mainState`;
+
+        // --- Initial Data Structure (Compiled from all your files) ---
+        const getInitialState = () => ({
+            aboutUs: {
+                mission: "VR Mall is a comprehensive creative marketplace that integrates B2C e-commerce with B2B supply chain management. We empower creative entrepreneurs with end-to-end solutions from product design to buyer delivery.",
+                differentiation: [
+                    "Deep integration of supply chain services including vetted manufacturing",
+                    "Access to local and overseas manufacturers with wholesale pricing",
+                    "Integrated warehousing and fulfillment (FBA Lite model)",
+                    "Comprehensive brand building tools and seller support",
+                    "Tiered pricing structure that balances affordability with premium services"
+                ],
+                targetMarket: "Creative entrepreneurs, makers, and small businesses seeking an affordable route from idea to market with comprehensive production and fulfillment support."
+            },
+            strategy: {
+                title: "Strategic Positioning and Market Differentiation",
+                evolvedModel: "Evolve beyond the traditional Etsy model by integrating critical supply chain management (SCM) capabilities. We are an ecosystem supporting production, fulfillment, and brand development.",
+                keyPoints: [
+                    { title: "B2C Craft + B2B Logistics", description: "Provide access to local/overseas manufacturers, inventory warehousing, and raw material sourcing. A hybrid manufacturing model for creatives." },
+                    { title: "Financial Model", description: "A tiered commission structure (e.g., 8% - 20%) is required to support integrated services, unlike Etsy's 6.5% transaction-only fee." },
+                    { title: "Supply Chain Tiers", description: "Offer multiple tiers (e.g., 'Creator Direct', 'VRM Fulfilled', 'VRM Managed') to cater to different seller needs, from DIY shipping to full-service SCM." }
+                ]
+            },
+            platformPages: {
+                buyerFacing: [
+                    { name: 'Home Page', description: 'Showcases value props, promotions, flagship sellers, trending designs', completed: false },
+                    { name: 'Category Overview & Product Discovery', description: 'Powerful search, rich filters, category trees, recommendations', completed: false },
+                    { name: 'Product Detail Pages', description: 'Dynamic media, customization, inventory, seller profile, reviews', completed: false },
+                    { name: 'Seller Profile/Storefronts', description: 'Portfolio display, shop intro, custom banners, shop policies', completed: false },
+                    { name: 'Cart & Checkout', description: 'Multi-seller support, delivery methods, guest or account checkout', completed: false },
+                    { name: 'Order Tracking', description: 'Real-time order status and shipping updates', completed: false },
+                    { name: 'Favorites/Wishlist', description: 'Save items for later purchase', completed: false },
+                    { name: 'Customer Dashboard', description: 'Order history, returns, reorders, messages, affiliate earnings', completed: false },
+                    { name: 'Community Portal', description: 'Forums, challenges, tutorials, events', completed: false },
+                    { name: 'Help Center/FAQ', description: 'Support articles, contact, returns/refunds policy', completed: false },
+                    { name: 'Affiliate Program Page', description: 'Program details, sign-up, commission structure', completed: false },
+                    { name: '"Design Your Own" Tool', description: 'Simple web-based tool for product customization', completed: false }
+                ],
+                sellerFacing: [
+                    { name: 'Seller Onboarding', description: 'Tier selection, identity verification, payment setup (Stripe)', completed: false },
+                    { name: 'Seller Dashboard', description: 'Sales analytics, payout info, order queue, inventory levels', completed: false },
+                    { name: 'Product Listing Manager', description: 'Create/edit listings, set pricing, manage variations, SEO', completed: false },
+                    { name: 'Order Management', description: 'View orders, print packing slips, purchase shipping labels', completed: false },
+                    { name: 'Fulfillment & SCM Portal', description: 'Submit designs for manufacturing, manage warehouse inventory, order raw materials', completed: false },
+                    { name: 'Brand Building Toolkit', description: 'Storefront customization, marketing tools, promo code generator', completed: false },
+                    { name: 'Seller-Buyer Messaging', description: 'Integrated communication system', completed: false },
+                    { name: 'Affiliate Management', description: 'Track affiliate-driven sales, manage links', completed: false },
+                    { name: 'Seller Handbook/Resources', description: 'Tutorials, guides, best practices', completed: false }
+                ],
+                adminPages: [
+                    { name: 'Master Admin Dashboard', description: 'Platform-wide analytics, sales, new users, revenue', completed: false },
+                    { name: 'User Management', description: 'View/edit/suspend user accounts (buyers, sellers)', completed: false },
+                    { name: 'Seller Verification Portal', description: 'Approve/deny new seller applications', completed: false },
+                    { name: 'Product Management (Platform)', description: 'Feature products, manage categories, moderate listings', completed: false },
+                    { name: 'Order Oversight', description: 'View all platform orders, handle escalations', completed: false },
+                    { name: 'Payout/Finance Management', description: 'Run payout reports, manage commissions, Stripe integration', completed: false },
+                    { name: 'Content Management System (CMS)', description: 'Edit static pages (About, FAQ), community content', completed: false },
+                    { name: 'Affiliate Program Admin', description: 'Manage affiliates, approve payouts, view analytics', completed: false },
+                    { name: 'IP & Legal Compliance', description: 'Manage takedown notices, review IP-flagged items', completed: false },
+                    { name: 'Support Ticket System', description: 'Manage and respond to user support requests', completed: false }
+                ]
+            },
+            technicalRequirements: {
+                coreFeatures: [
+                    { name: 'Multi-Vendor Marketplace Engine', description: 'Core logic for multiple sellers, products, and carts', completed: false },
+                    { name: 'User Authentication', description: 'Buyer, Seller, Admin roles and permissions', completed: false },
+                    { name: 'Database Architecture', description: 'Scalable schema for users, products, orders, etc.', completed: false },
+                    { name: 'Payment Gateway Integration', description: 'Stripe Connect for splitting payments and commissions', completed: false },
+                    { name: 'Product Customization Tool', description: 'Basic "Design Your Own" interface', completed: false },
+                    { name: 'Search Engine', description: 'Fast, filterable product search (e.g., Algolia or equivalent)', completed: false }
+                ],
+                integrations: [
+                    { name: 'SCM & Manufacturing API', description: 'Connect to 3PL and manufacturer backends', completed: false },
+                    { name: 'Shipping Label API', description: 'Integrate with Shippo, EasyPost, etc.', completed: false },
+                    { name: 'Email Marketing', description: 'Transactional emails (Mailgun) & marketing (Mailchimp)', completed: false },
+                    { name: 'Analytics', description: 'Google Analytics, internal dashboards', completed: false },
+                    { name: 'Affiliate Tracking', description: 'Build or integrate affiliate tracking logic', completed: false }
+                ],
+                opsAndLegal: [
+                    { name: 'IP Screening System', description: 'Automated/manual review for trademark/copyright', completed: false },
+                    { name: 'Automated Takedown Tools', description: 'Workflow for processing DMCA/IP complaints', completed: false },
+                    { name: 'Legal Documents', description: 'Terms of Service, Seller Policy, Privacy Policy, Affiliate T&C', completed: false }
+                ]
+            },
+            affiliateProgram: {
+                structure: [
+                    { name: 'Commission', description: 'Tiered (e.g., 5-10%) based on seller subscription or sales volume', completed: false },
+                    { name: 'Cookie Duration', description: '30-90 days, first-touch attribution model', completed: false },
+                    { name: 'Payouts', description: 'Managed via Stripe Connect or PayPal, $50 minimum threshold', completed: false }
+                ],
+                management: [
+                    { name: 'Tracking', description: 'Custom link generator, dashboard for affiliates', completed: false },
+                    { name: 'Onboarding', description: 'Clear T&C, simple sign-up process', completed: false },
+                    { name: 'Creatives', description: 'Provide pre-made banners, logos, and marketing materials', completed: false }
+                ]
+            },
+            roadmap: {
+                phase1: {
+                    name: 'Foundation (Months 1-3)',
+                    tasks: [
+                        { name: 'Business entity setup and legal', completed: false },
+                        { name: 'Finalize technical stack and architecture', completed: false },
+                        { name: 'Source and vet initial 3PL/manufacturing partners', completed: false },
+                        { name: 'Develop core platform MVP (auth, listings, checkout)', completed: false },
+                        { name: 'Payment gateway setup', completed: false },
+                        { name: 'Legal framework and T&C', completed: false }
+                    ]
+                },
+                phase2: {
+                    name: 'Build-Out (Months 4-6)',
+                    tasks: [
+                        { name: 'Seller onboarding system', completed: false },
+                        { name: 'Product listing and management tools', completed: false },
+                        { name: 'Fulfillment dashboard integration', completed: false },
+                        { name: 'Brand building toolkit', completed: false },
+                        { name: 'IP screening system implementation', completed: false },
+                        { name: 'Beta seller recruitment', completed: false }
+                    ]
+                },
+                phase3: {
+                    name: 'Community & Growth (Months 7-9)',
+                    tasks: [
+                        { name: 'Community portal launch', completed: false },
+                        { name: 'Affiliate program setup and testing', completed: false },
+                        { name: 'Marketing and content hub', completed: false },
+                        { name: 'Seller training program launch', completed: false },
+                        { name: 'Initial product listings go live', completed: false },
+                        { name: 'Soft launch to limited audience', completed: false }
+                    ]
+                },
+                phase4: {
+                    name: 'Launch & Scale (Months 10-12)',
+                    tasks: [
+                        { name: 'Public marketplace launch', completed: false },
+                        { name: 'Affiliate recruitment campaign', completed: false },
+                        { name: 'Seller recruitment and onboarding at scale', completed: false },
+                        { name: 'Marketing campaigns (SEO, social, paid ads)', completed: false },
+                        { name: 'Performance optimization and iteration', completed: false },
+                        { name: 'Community events and challenges', completed: false }
+                    ]
+                }
+            },
+            products: [
+                { category: "Scrap-Based Product", name: 'Clear Acrylic 3D Letters (4" and 8")', price: '$5 - $11 per letter', details: 'Laser-cut from clear acrylic (~¼″ thick), designed to stand upright.', potential: 'High. If cut from scrap, material cost is negligible.', listed: false },
+                { category: "Scrap-Based Product", name: 'Acrylic Photo Prints on Standoffs (8x10", 11x17")', price: '$60 - $85 per print', details: 'High-gloss photo prints fused to acrylic panels with metal standoff hardware.', potential: 'High. Using in-house printing and scrap material yields a wide profit margin.', listed: false },
+                { category: "Scrap-Based Product", name: 'Acrylic Coaster Sets (4-pack)', price: '$25 - $40 per set', details: 'Typically ~4″ in diameter and cut from acrylic offcuts. Can be printed/engraved.', potential: 'High. The primary material is scrap, making margins very high.', listed: false },
+                { category: "Scrap-Based Product", name: 'Acrylic Keychains (Various Shapes)', price: '$8 - $15 per keychain', details: 'Custom shapes laser-cut from acrylic scrap, often with UV-printed designs.', potential: 'High. Very low material cost, high perceived value, and easy to ship.', listed: false },
+                { category: "Scrap-Based Product", name: 'Layered Acrylic Nameplates/Signs', price: '$30 - $60 per sign', details: 'Signs made by layering different colors of scrap acrylic, creating a 3D effect.', potential: 'High. High-value custom product made from low-cost scrap.', listed: false },
+                { category: "Gift Box Tier", name: 'Small "Creator" Gift Box', price: '$40 - $60', details: 'Includes 1-2 small scrap-based items (e.g., keychain, coaster) and 1 apparel item.', potential: 'Medium. Good for inventory bundling, margins depend on apparel cost.', listed: false },
+                { category: "Gift Box Tier", name: 'Medium "Pro" Gift Box', price: '$75 - $100', details: 'Includes 2-3 scrap items, 1 premium apparel item, and 1-2 warehouse items.', potential: 'Medium. Higher price point, but more complex fulfillment. Good for showcasing variety.', listed: false },
+                { category: "Gift Box Tier", name: 'Large "Studio" Gift Box', price: '$120 - $160', details: 'A premium set with multiple high-value items (e.g., acrylic print, custom jersey).', potential: 'Medium. Highest margin in dollars, but lowest in percentage. Targets corporate/team gifts.', listed: false },
+                { category: "Warehouse Inventory", name: 'Premium Padded Folding Chairs (Set of 2)', price: '$60 - $85 per set', details: 'High-quality folding chairs with thick padding and robust steel frames.', potential: 'Moderate. Success depends on emphasizing premium features.', listed: false },
+                { category: "Warehouse Inventory", name: 'Holiday/Birthday Wrapping Paper (Generic Patterns)', price: '$5 - $8 per roll', details: 'Standard-sized rolls with non-specific patterns (polka dots, stripes).', potential: 'Moderate. Decent markup, generic designs won\'t go out of style.', listed: false },
+                { category: "Custom Pre-Order Apparel", name: 'Full-Sublimation Custom Baseball Jerseys', price: '$50 - $80+ per jersey', details: 'Pro-quality, moisture-wicking fabric, fully customizable with sublimation.', potential: 'Moderate. Profit depends on volume; pre-orders for teams lower unit cost.', listed: false }
+            ]
+        });
+
+        // --- Core App Logic ---
+        window.onload = async () => {
+            try {
+                // Set log level for debugging
+                // setLogLevel('debug');
+
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // Set persistence to inMemory to avoid issues in some environments
+                await setPersistence(auth, inMemoryPersistence);
+
+                setupNavigation();
+                setupTabs();
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("User authenticated:", userId);
+                        
+                        // Show the team/user ID
+                        const userIdElement = document.getElementById('user-id-display');
+                        if (userIdElement) {
+                            userIdElement.textContent = `Team ID: ${userId}`;
+                        }
+
+                        // Path to the shared document
+                        docRef = doc(db, mainDocPath);
+                        
+                        // --- Real-time listener ---
+                        onSnapshot(docRef, (docSnap) => {
+                            if (docSnap.exists()) {
+                                console.log("Received remote state update");
+                                appState = docSnap.data();
+                            } else {
+                                console.log("No document found, creating initial state...");
+                                appState = getInitialState();
+                                setDoc(docRef, appState).catch(e => console.error("Error creating document:", e));
+                            }
+                            // Full re-render on any data change
+                            renderAllPages();
+                        }, (error) => {
+                            console.error("Error in onSnapshot listener:", error);
+                            showNotification("Error connecting to database. Please refresh.", true);
+                        });
+                    } else {
+                        console.log("User not signed in.");
+                    }
+                });
+
+                // Sign in
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+            } catch (error) {
+                console.error("Initialization Error:", error);
+                showNotification("Failed to initialize the application. Check console.", true);
+            }
+        };
+
+        // --- Render Functions ---
+
+        function renderAllPages() {
+            if (!appState || Object.keys(appState).length === 0) {
+                console.log("State not ready, skipping render");
+                return;
+            }
+            console.log("Rendering all pages with current state...");
+            renderDashboard();
+            renderAboutAndStrategy();
+            renderChecklistPage('platform-pages-content', appState.platformPages, 'platformPages');
+            renderChecklistPage('technical-req-content', appState.technicalRequirements, 'technicalRequirements');
+            renderChecklistPage('affiliate-content', appState.affiliateProgram, 'affiliateProgram');
+            renderChecklistPage('roadmap-content', appState.roadmap, 'roadmap');
+            renderProducts();
+        }
+        
+        function renderDashboard() {
+            const page = document.getElementById('page-dashboard');
+            if (!page || !appState.platformPages) return;
+
+            // Calculate overall progress
+            let totalTasks = 0;
+            let completedTasks = 0;
+
+            const allSections = [
+                ...Object.values(appState.platformPages).flat(),
+                ...Object.values(appState.technicalRequirements).flat(),
+                ...Object.values(appState.affiliateProgram).flat(),
+                ...Object.values(appState.roadmap).flatMap(phase => phase.tasks),
+                ...appState.products
+            ];
+
+            allSections.forEach(item => {
+                totalTasks++;
+                if (item.completed || item.listed) {
+                    completedTasks++;
+                }
+            });
+
+            const overallProgress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+            // Calculate stats
+            const pagesTotal = appState.platformPages.buyerFacing.length + appState.platformPages.sellerFacing.length + appState.platformPages.adminPages.length;
+            const pagesCompleted = [
+                ...appState.platformPages.buyerFacing,
+                ...appState.platformPages.sellerFacing,
+                ...appState.platformPages.adminPages
+            ].filter(p => p.completed).length;
+
+            const tasksTotal = allSections.length - appState.products.length;
+            const tasksCompleted = completedTasks - appState.products.filter(p => p.listed).length;
+            
+            const productsTotal = appState.products.length;
+            const productsListed = appState.products.filter(p => p.listed).length;
+
+            page.innerHTML = `
+                <h1 class="text-3xl font-bold text-gray-900 mb-6">Project Dashboard</h1>
+                
+                <!-- Overall Progress -->
+                <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-lg font-semibold text-gray-800">Overall Project Completion</span>
+                        <span class="text-xl font-bold text-indigo-600">${overallProgress}%</span>
+                    </div>
+                    ${createProgressBar(overallProgress, 'indigo')}
+                </div>
+
+                <!-- Stat Cards -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    ${createStatCard('Total Pages', `${pagesCompleted} / ${pagesTotal}`, 'collection', 'blue')}
+                    ${createStatCard('Project Tasks', `${tasksCompleted} / ${tasksTotal}`, 'clipboard-check', 'green')}
+                    ${createStatCard('Products Listed', `${productsListed} / ${productsTotal}`, 'tag', 'yellow')}
+                </div>
+                
+                <!-- Quick Links -->
+                <div>
+                    <h2 class="text-2xl font-semibold text-gray-800 mb-4">Quick Links</h2>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        ${createQuickLink('Platform Pages', 'page-platform', 'layout-dashboard')}
+                        ${createQuickLink('Tech Requirements', 'page-technical', 'server')}
+                        ${createQuickLink('Project Roadmap', 'page-roadmap', 'map')}
+                        ${createQuickLink('Product Catalog', 'page-products', 'shopping-bag')}
+                    </div>
+                </div>
+            `;
+
+            // Add event listeners to quick links
+            page.querySelectorAll('[data-target]').forEach(link => {
+                link.addEventListener('click', () => {
+                    const targetPage = link.getAttribute('data-target');
+                    showPage(targetPage);
+                    // Highlight the corresponding sidebar link
+                    document.querySelectorAll('.sidebar-link').forEach(nav => {
+                        const isActive = (nav.getAttribute('data-target') === targetPage);
+                        
+                        // Active state classes
+                        nav.classList.toggle('bg-gray-700', isActive);
+                        nav.classList.toggle('text-white', isActive);
+                        
+                        // Inactive state classes
+                        nav.classList.toggle('text-gray-300', !isActive);
+                        nav.classList.toggle('hover:bg-gray-700', !isActive);
+                        nav.classList.toggle('hover:text-white', !isActive);
+                    });
+                });
+            });
+        }
+        
+        function createStatCard(title, value, iconName, color) {
+            return `
+                <div class="bg-white rounded-lg shadow-md p-5 flex items-center space-x-4">
+                    <div class="flex-shrink-0 w-12 h-12 flex items-center justify-center rounded-full bg-${color}-100 text-${color}-600">
+                        ${getIcon(iconName, 'w-6 h-6')}
+                    </div>
+                    <div>
+                        <div class="text-sm font-medium text-gray-500">${title}</div>
+                        <div class="text-2xl font-bold text-gray-900">${value}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function createQuickLink(title, targetPage, iconName) {
+            return `
+                <button data-target="${targetPage}" class="bg-white p-6 rounded-lg shadow-md flex flex-col items-center justify-center text-center hover:shadow-lg transition-shadow duration-200">
+                    ${getIcon(iconName, 'w-10 h-10 text-indigo-600 mb-3')}
+                    <span class="text-md font-semibold text-gray-700">${title}</span>
+                </button>
+            `;
+        }
+
+        function renderAboutAndStrategy() {
+            const page = document.getElementById('page-about');
+            if (!page || !appState.aboutUs) return;
+            
+            const { aboutUs, strategy } = appState;
+
+            page.innerHTML = `
+                <h1 class="text-3xl font-bold text-gray-900 mb-8">About & Strategy</h1>
+                
+                <!-- About Us -->
+                <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+                    <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                        ${getIcon('info', 'w-6 h-6 mr-3 text-indigo-600')}
+                        About Us
+                    </h2>
+                    <p class="text-lg text-gray-600 mb-4">${aboutUs.mission}</p>
+                    
+                    <h3 class="text-lg font-semibold text-gray-700 mb-2">Our Differentiation:</h3>
+                    <ul class="list-disc list-inside space-y-1 text-gray-600 mb-4">
+                        ${aboutUs.differentiation.map(item => `<li>${item}</li>`).join('')}
+                    </ul>
+                    
+                    <h3 class="text-lg font-semibold text-gray-700 mb-2">Target Market:</h3>
+                    <p class="text-gray-600">${aboutUs.targetMarket}</p>
+                </div>
+                
+                <!-- Strategy -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                        ${getIcon('target', 'w-6 h-6 mr-3 text-indigo-600')}
+                        ${strategy.title}
+                    </h2>
+                    <p class="text-lg text-gray-600 mb-6">${strategy.evolvedModel}</p>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        ${strategy.keyPoints.map(point => `
+                            <div class="bg-indigo-50 border border-indigo-200 rounded-lg p-5">
+                                <h4 class="text-lg font-bold text-indigo-800 mb-2">${point.title}</h4>
+                                <p class="text-sm text-indigo-700">${point.description}</p>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderChecklistPage(containerId, data, stateKey) {
+            const container = document.getElementById(containerId);
+            if (!container || !data) return;
+
+            // Create tab navigation
+            const sections = Object.keys(data);
+            let tabs = '';
+            let tabContents = '';
+
+            sections.forEach((key, index) => {
+                const title = data[key].name || key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+                const isActive = index === 0;
+
+                tabs += `
+                    <button class="tab-link ${isActive ? 'active' : ''} px-4 py-2 font-medium text-sm rounded-md" data-tab="${stateKey}-${key}">
+                        ${title}
+                    </button>
+                `;
+
+                // Calculate progress for this section
+                const items = Array.isArray(data[key]) ? data[key] : (data[key].tasks || []);
+                const completed = items.filter(item => item.completed).length;
+                const total = items.length;
+                const progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+                // Create checklist items
+                const checklistItems = items.map((item, itemIndex) => {
+                    const dataPath = `${stateKey}.${key}${Array.isArray(data[key]) ? '' : '.tasks'}[${itemIndex}].completed`;
+                    return `
+                        <label for="${stateKey}-${key}-${itemIndex}" class="flex items-start space-x-3 p-4 bg-white rounded-lg shadow border border-gray-200 hover:bg-gray-50 transition-colors">
+                            <input 
+                                type="checkbox" 
+                                id="${stateKey}-${key}-${itemIndex}" 
+                                class="mt-1 h-5 w-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                ${item.completed ? 'checked' : ''}
+                                onclick="window.updateCompletion('${dataPath}', this.checked)"
+                            >
+                            <div class="flex-1">
+                                <span class="block font-medium text-gray-800">${item.name}</span>
+                                <span class="block text-sm text-gray-500">${item.description || ''}</span>
+                            </div>
+                        </label>
+                    `;
+                }).join('');
+
+                tabContents += `
+                    <div id="${stateKey}-${key}" class="tab-content ${isActive ? 'active' : ''} space-y-4">
+                        <!-- Section Progress -->
+                        <div class="bg-white rounded-lg shadow-md p-4 mb-4">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-md font-semibold text-gray-700">${title} Completion</span>
+                                <span class="text-lg font-bold text-indigo-600">${progress}%</span>
+                            </div>
+                            ${createProgressBar(progress, 'indigo')}
+                        </div>
+                        
+                        <div class="space-y-4">
+                            ${checklistItems.length > 0 ? checklistItems : '<p class="text-gray-500">No items in this section.</p>'}
+                        </div>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = `
+                <div class="tab-nav-wrapper">
+                    <nav class="tab-nav flex space-x-2 p-1 bg-gray-200 rounded-lg">
+                        ${tabs}
+                    </nav>
+                </div>
+                <div class="tab-content-wrapper mt-6">
+                    ${tabContents}
+                </div>
+            `;
+        }
+
+        function renderProducts() {
+            const page = document.getElementById('page-products');
+            const grid = document.getElementById('product-grid');
+            if (!page || !grid || !appState.products) return;
+
+            const products = appState.products;
+            const listed = products.filter(p => p.listed).length;
+            const total = products.length;
+            const progress = total > 0 ? Math.round((listed / total) * 100) : 0;
+            
+            // Update progress bar
+            document.getElementById('products-total-bar').style.width = `${progress}%`;
+            document.getElementById('products-total-bar').textContent = `${progress}%`;
+            document.getElementById('products-total-percent').textContent = `${progress}%`;
+
+            // Filter logic
+            const activeFilter = document.querySelector('.filter-btn.active').dataset.category;
+            const filteredProducts = activeFilter === 'all' 
+                ? products 
+                : products.filter(p => p.category === activeFilter);
+
+            grid.innerHTML = filteredProducts.map((product, index) => {
+                // Find the original index to create the correct data-path
+                const originalIndex = products.findIndex(p => p.name === product.name);
+                const dataPath = `products[${originalIndex}].listed`;
+
+                return `
+                    <div class="bg-white rounded-lg shadow-md overflow-hidden flex flex-col border border-gray-200">
+                        <div class="p-5 flex-1">
+                            <div class="flex justify-between items-start mb-2">
+                                <span class="text-sm font-semibold px-2 py-0.5 rounded ${getCategoryClass(product.category)}">
+                                    ${product.category}
+                                </span>
+                                <span class="text-lg font-bold text-gray-800">${product.price}</span>
+                            </div>
+                            <h3 class="text-lg font-bold text-gray-900 mb-2">${product.name}</h3>
+                            <p class="text-sm text-gray-600 mb-3">${product.details}</p>
+                            <div class="text-sm">
+                                <span class="font-semibold text-gray-700">Profit Potential:</span>
+                                <span class="font-medium ${getPotentialClass(product.potential)}">
+                                    ${product.potential}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="bg-gray-50 p-4 border-t border-gray-200">
+                            <label for="product-${originalIndex}" class="flex items-center space-x-2 cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    id="product-${originalIndex}" 
+                                    class="h-5 w-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                    ${product.listed ? 'checked' : ''}
+                                    onclick="window.updateCompletion('${dataPath}', this.checked)"
+                                >
+                                <span class="font-medium text-gray-700">Mark as Listed</span>
+                            </label>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        // --- Helper Functions ---
+        
+        function getCategoryClass(category) {
+            switch (category) {
+                case 'Scrap-Based Product': return 'bg-blue-100 text-blue-800';
+                case 'Gift Box Tier': return 'bg-purple-100 text-purple-800';
+                case 'Warehouse Inventory': return 'bg-yellow-100 text-yellow-800';
+                case 'Custom Pre-Order Apparel': return 'bg-green-100 text-green-800';
+                default: return 'bg-gray-100 text-gray-800';
+            }
+        }
+        
+        function getPotentialClass(potential) {
+            switch (potential) {
+                case 'High': return 'text-green-600';
+                case 'Moderate': return 'text-yellow-600';
+                case 'Low': return 'text-red-600';
+                default: return 'text-gray-600';
+            }
+        }
+
+        function createProgressBar(progress, color) {
+            return `
+                <div class="w-full bg-gray-200 rounded-full h-2.5">
+                    <div class="bg-${color}-600 h-2.5 rounded-full" style="width: ${progress}%"></div>
+                </div>
+            `;
+        }
+
+        // Expose update function to global scope
+        window.updateCompletion = (path, isCompleted) => {
+            if (!docRef || !appState || Object.keys(appState).length === 0) {
+                console.error("Firestore docRef or appState not initialized.");
+                showNotification("Error: Not connected to database.", true);
+                // Revert checkbox
+                const checkbox = document.querySelector(`[onclick="window.updateCompletion('${path}', this.checked)"]`);
+                if (checkbox) checkbox.checked = !isCompleted;
+                return;
+            }
+
+            console.log(`Updating local path: ${path} to ${isCompleted}`);
+
+            try {
+                // Helper function to set nested value
+                const setNestedValue = (obj, p, value) => {
+                    const keys = p.replace(/\[(\d+)\]/g, '.$1').split('.'); // 'products[1].listed' -> ['products', '1', 'listed']
+                    let current = obj;
+                    for (let i = 0; i < keys.length - 1; i++) {
+                        current = current[keys[i]];
+                        if (current === undefined) {
+                             console.error("Invalid path", p, "at key", keys[i]);
+                             return false;
+                        }
+                    }
+                    current[keys[keys.length - 1]] = value;
+                    return true;
+                };
+
+                // 1. Modify the local appState
+                if (!setNestedValue(appState, path, isCompleted)) {
+                    throw new Error("Failed to set nested value.");
+                }
+                
+                // 2. Get the top-level key that changed (e.g., 'products', 'platformPages')
+                const topLevelKey = path.split('.')[0].split('[')[0]; // 'products[1].listed' -> 'products'
+                
+                if (!appState[topLevelKey]) {
+                    console.error("Invalid topLevelKey", topLevelKey);
+                    throw new Error("Invalid top-level key.");
+                }
+
+                // 3. Update *only that top-level array/object* in Firestore
+                //    This is more efficient than sending the whole appState and avoids race conditions.
+                updateDoc(docRef, { [topLevelKey]: appState[topLevelKey] })
+                    .then(() => {
+                        showNotification("Progress saved!", false);
+                        // No need to re-render, onSnapshot will handle it.
+                    })
+                    .catch((error) => {
+                        console.error("Error updating document: ", error);
+                        showNotification("Error saving progress. Please try again.", true);
+                        
+                        // Revert local state change
+                        setNestedValue(appState, path, !isCompleted);
+
+                        // Revert checkbox
+                        const checkbox = document.querySelector(`[onclick="window.updateCompletion('${path}', this.checked)"]`);
+                        if (checkbox) {
+                            checkbox.checked = !isCompleted;
+                        }
+                    });
+
+            } catch (e) {
+                console.error("Failed to update local state with path:", path, e);
+                showNotification("A local state error occurred.", true);
+                // Revert checkbox
+                const checkbox = document.querySelector(`[onclick="window.updateCompletion('${path}', this.checked)"]`);
+                if (checkbox) {
+                    checkbox.checked = !isCompleted;
+                }
+            }
+        };
+
+        // --- Navigation ---
+
+        function setupNavigation() {
+            const links = document.querySelectorAll('.sidebar-link');
+            links.forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const targetId = link.getAttribute('data-target');
+                    
+                    // Update active link
+                    links.forEach(nav => {
+                        const isActive = (nav === link);
+                        
+                        // Active state classes
+                        nav.classList.toggle('bg-gray-700', isActive);
+                        nav.classList.toggle('text-white', isActive);
+                        
+                        // Inactive state classes
+                        nav.classList.toggle('text-gray-300', !isActive);
+                        nav.classList.toggle('hover:bg-gray-700', !isActive);
+                        nav.classList.toggle('hover:text-white', !isActive);
+                    });
+                    
+                    showPage(targetId);
+                });
+            });
+            // Show dashboard by default
+            showPage('page-dashboard');
+        }
+
+        function showPage(targetId) {
+            document.querySelectorAll('main section').forEach(section => {
+                section.classList.toggle('hidden', section.id !== targetId);
+            });
+            // Scroll to top
+            document.querySelector('main').scrollTop = 0;
+        }
+
+        function setupTabs() {
+            // Use event delegation on the main container
+            const main = document.querySelector('main');
+            main.addEventListener('click', (e) => {
+                const target = e.target.closest('.tab-link');
+                if (!target) return;
+
+                const tabNav = target.closest('.tab-nav');
+                const contentWrapper = tabNav.closest('.tab-nav-wrapper').nextElementSibling;
+                
+                // Remove active class from sibling tabs and content
+                tabNav.querySelectorAll('.tab-link').forEach(tab => tab.classList.remove('active'));
+                contentWrapper.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+                
+                // Add active class to clicked tab and corresponding content
+                target.classList.add('active');
+                const contentId = target.dataset.tab;
+                document.getElementById(contentId).classList.add('active');
+            });
+        }
+        
+        function setupProductFilters() {
+            const filterButtons = document.querySelectorAll('.filter-btn');
+            filterButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    filterButtons.forEach(btn => btn.classList.remove('active'));
+                    button.classList.add('active');
+                    renderProducts(); // Re-render products with the new filter
+                });
+            });
+        }
+        
+        document.addEventListener('DOMContentLoaded', setupProductFilters);
+
+        // --- Notification ---
+        function showNotification(message, isError = false) {
+            const notification = document.getElementById('notification');
+            const text = document.getElementById('notification-text');
+            const icon = document.getElementById('notification-icon');
+            
+            text.textContent = message;
+            
+            // Clear previous classes
+            notification.classList.remove('bg-green-600', 'bg-red-600', 'translate-y-0', 'opacity-100');
+            icon.innerHTML = '';
+            
+            if (isError) {
+                notification.classList.add('bg-red-600');
+                icon.innerHTML = getIcon('alert-triangle', 'w-5 h-5');
+            } else {
+                notification.classList.add('bg-green-600');
+                icon.innerHTML = getIcon('check-circle', 'w-5 h-5');
+            }
+            
+            // Show
+            notification.classList.add('translate-y-0', 'opacity-100');
+            
+            // Hide after 3 seconds
+            setTimeout(() => {
+                notification.classList.remove('translate-y-0', 'opacity-100');
+            }, 3000);
+        }
+
+        // --- SVG Icons ---
+        function getIcon(name, classes = 'w-6 h-6') {
+            const icons = {
+                'dashboard': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>`,
+                'info': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`,
+                'layout-dashboard': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>`,
+                'server': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>`,
+                'gift': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><polyline points="20 12 20 22 4 22 4 12"></polyline><rect x="2" y="7" width="20" height="5"></rect><line x1="12" y1="22" x2="12" y2="7"></line><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path></svg>`,
+                'map': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>`,
+                'shopping-bag': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>`,
+                'check-circle': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`,
+                'alert-triangle': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`,
+                'target': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle></svg>`,
+                'collection': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path></svg>`,
+                'clipboard-check': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect><path d="m9 14 2 2 4-4"></path></svg>`,
+                'tag': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>`
+            };
+            return icons[name] || '';
+        }
+    </script>
+    
+    <!-- Custom Styles -->
+    <style>
+        /* Inter Font */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        /* Custom scrollbar for main content */
+        main {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+        main::-webkit-scrollbar {
+            display: none; /* Chrome, Safari, Opera */
+        }
+
+        /* Tab Styles */
+        .tab-nav {
+            display: inline-flex;
+            overflow-x: auto;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        .tab-nav::-webkit-scrollbar {
+            display: none;
+        }
+        .tab-link {
+            white-space: nowrap;
+            color: #374151; /* text-gray-700 */
+            transition: background-color 0.2s, color 0.2s;
+        }
+        .tab-link:hover {
+            background-color: #E5E7EB; /* bg-gray-200 */
+        }
+        .tab-link.active {
+            background-color: #ffffff; /* bg-white */
+            color: #4F46E5; /* text-indigo-600 */
+            font-weight: 600;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.5s;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Filter Button Styles */
+        .filter-btn {
+            background-color: #ffffff; /* bg-white */
+            color: #4B5563; /* text-gray-600 */
+            border: 1px solid #D1D5DB; /* border-gray-300 */
+            transition: all 0.2s;
+        }
+        .filter-btn:hover {
+            background-color: #F9FAFB; /* bg-gray-50 */
+        }
+        .filter-btn.active {
+            background-color: #EEF2FF; /* bg-indigo-50 */
+            color: #4F46E5; /* text-indigo-700 */
+            border-color: #A5B4FC; /* border-indigo-300 */
+            font-weight: 600;
+        }
+        
+        /* Custom Checkbox */
+        input[type="checkbox"] {
+            transition: all 0.2s;
+        }
+    </style>
+</head>
+<body class="h-full flex bg-gray-100">
+
+    <!-- Sidebar -->
+    <nav class="w-64 bg-gray-800 text-white flex flex-col flex-shrink-0">
+        <div class="flex items-center justify-center h-16 shadow-md">
+            <h1 class="text-2xl font-bold">VR Mall</h1>
+        </div>
+        <div class="flex-1 overflow-y-auto">
+            <ul class="py-4">
+                <li>
+                    <a href="#" class="sidebar-link flex items-center px-6 py-3 bg-gray-700 text-white" data-target="page-dashboard">
+                        <span id="icon-dashboard"></span>
+                        <span class="ml-3">Dashboard</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" class="sidebar-link flex items-center px-6 py-3 text-gray-300 hover:bg-gray-700 hover:text-white" data-target="page-about">
+                        <span id="icon-about"></span>
+                        <span class="ml-3">About & Strategy</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" class="sidebar-link flex items-center px-6 py-3 text-gray-300 hover:bg-gray-700 hover:text-white" data-target="page-platform">
+                        <span id="icon-platform"></span>
+                        <span class="ml-3">Platform Pages</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" class="sidebar-link flex items-center px-6 py-3 text-gray-300 hover:bg-gray-700 hover:text-white" data-target="page-technical">
+                        <span id="icon-technical"></span>
+                        <span class="ml-3">Tech Requirements</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" class="sidebar-link flex items-center px-6 py-3 text-gray-300 hover:bg-gray-700 hover:text-white" data-target="page-affiliate">
+                        <span id="icon-affiliate"></span>
+                        <span class="ml-3">Affiliate Program</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" class="sidebar-link flex items-center px-6 py-3 text-gray-300 hover:bg-gray-700 hover:text-white" data-target="page-roadmap">
+                        <span id="icon-roadmap"></span>
+                        <span class="ml-3">Project Roadmap</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#" class="sidebar-link flex items-center px-6 py-3 text-gray-300 hover:bg-gray-700 hover:text-white" data-target="page-products">
+                        <span id="icon-products"></span>
+                        <span class="ml-3">Product Catalog</span>
+                    </a>
+                </li>
+            </ul>
+        </div>
+        <div class="p-4 border-t border-gray-700">
+            <span id="user-id-display" class="text-xs text-gray-400">Connecting...</span>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="flex-1 overflow-y-auto p-8 md:p-10">
+        
+        <!-- Page: Dashboard -->
+        <section id="page-dashboard" class=""></section>
+        
+        <!-- Page: About & Strategy -->
+        <section id="page-about" class="hidden"></section>
+
+        <!-- Page: Platform Pages -->
+        <section id="page-platform" class="hidden">
+            <h1 class="text-3xl font-bold text-gray-900 mb-6">Platform Pages</h1>
+            <div id="platform-pages-content">
+                <!-- Content injected by JS -->
+            </div>
+        </section>
+
+        <!-- Page: Technical Requirements -->
+        <section id="page-technical" class="hidden">
+            <h1 class="text-3xl font-bold text-gray-900 mb-6">Technical Requirements</h1>
+            <div id="technical-req-content">
+                <!-- Content injected by JS -->
+            </div>
+        </section>
+
+        <!-- Page: Affiliate Program -->
+        <section id="page-affiliate" class="hidden">
+            <h1 class="text-3xl font-bold text-gray-900 mb-6">Affiliate Program</h1>
+            <div id="affiliate-content">
+                <!-- Content injected by JS -->
+            </div>
+        </section>
+
+        <!-- Page: Roadmap -->
+        <section id="page-roadmap" class="hidden">
+            <h1 class="text-3xl font-bold text-gray-900 mb-6">Project Roadmap</h1>
+            <div id="roadmap-content">
+                <!-- Content injected by JS -->
+            </div>
+        </section>
+        
+        <!-- Page: Products -->
+        <section id="page-products" class="hidden">
+            <h1 class="text-3xl font-bold text-gray-900 mb-6">Product Catalog</h1>
+
+            <!-- Product Progress -->
+            <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-lg font-semibold text-gray-800">Product Listing Completion</span>
+                    <span class="text-xl font-bold text-indigo-600" id="products-total-percent">0%</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2.5">
+                    <div id="products-total-bar" class="bg-indigo-600 h-2.5 rounded-full text-center text-xs text-white font-bold" style="width: 0%;"></div>
+                </div>
+            </div>
+
+            <!-- Filters -->
+            <div class="flex flex-wrap gap-2 mb-6">
+                <button class="filter-btn active px-4 py-2 rounded-full text-sm font-medium" data-category="all">All Products</button>
+                <button class="filter-btn px-4 py-2 rounded-full text-sm font-medium" data-category="Scrap-Based Product">Scrap-Based</button>
+                <button class="filter-btn px-4 py-2 rounded-full text-sm font-medium" data-category="Gift Box Tier">Gift Boxes</button>
+                <button class="filter-btn px-4 py-2 rounded-full text-sm font-medium" data-category="Warehouse Inventory">Warehouse</button>
+                <button class="filter-btn px-4 py-2 rounded-full text-sm font-medium" data-category="Custom Pre-Order Apparel">Custom Apparel</button>
+            </div>
+
+            <!-- Product Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="product-grid">
+                <!-- Products injected by JS -->
+            </div>
+        </section>
+
+    </main>
+    
+    <!-- Notification Popup -->
+    <div id="notification" class="fixed top-5 right-5 w-auto max-w-sm p-4 rounded-lg shadow-lg text-white flex items-center space-x-3 transform translate-y-10 opacity-0 transition-all duration-300 ease-in-out z-50">
+        <div id="notification-icon"></div>
+        <span id="notification-text"></span>
+    </div>
+
+    <!-- Script to inject icons -->
+    <script>
+        document.getElementById('icon-dashboard').innerHTML = getIcon('dashboard', 'w-6 h-6');
+        document.getElementById('icon-about').innerHTML = getIcon('info', 'w-6 h-6');
+        document.getElementById('icon-platform').innerHTML = getIcon('layout-dashboard', 'w-6 h-6');
+        document.getElementById('icon-technical').innerHTML = getIcon('server', 'w-6 h-6');
+        document.getElementById('icon-affiliate').innerHTML = getIcon('gift', 'w-6 h-6');
+        document.getElementById('icon-roadmap').innerHTML = getIcon('map', 'w-6 h-6');
+        document.getElementById('icon-products').innerHTML = getIcon('shopping-bag', 'w-6 h-6');
+        
+        // --- Helper function for icons (needs to be outside module) ---
+        function getIcon(name, classes = 'w-6 h-6') {
+            const icons = {
+                'dashboard': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>`,
+                'info': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`,
+                'layout-dashboard': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>`,
+                'server': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>`,
+                'gift': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><polyline points="20 12 20 22 4 22 4 12"></polyline><rect x="2" y="7" width="20" height="5"></rect><line x1="12" y1="22" x2="12" y2="7"></line><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path></svg>`,
+                'map': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>`,
+                'shopping-bag': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>`
+            };
+            return icons[name] || '';
+        }
+    </script>
+</body>
+</html>
+
+
+
+
